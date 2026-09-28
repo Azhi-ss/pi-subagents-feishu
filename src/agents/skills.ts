@@ -9,6 +9,7 @@ import * as path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { parseFrontmatter } from "./frontmatter.ts";
 import { getAgentDir, getProjectConfigDir } from "../shared/utils.ts";
+import { isFeishuHost, readFeishuContext } from "../shared/feishu-host.ts";
 
 export type SkillSource =
 	| "project"
@@ -577,6 +578,15 @@ function collectFilesystemSkills(cwd: string, agentDir: string, skillPaths: Skil
 }
 
 function getCachedSkills(cwd: string): CachedSkillEntry[] {
+	const feishu = readFeishuContext();
+	if (feishu) return feishu.skills.map((skill, order) => ({
+		name: skill.name,
+		filePath: skill.filePath,
+		description: skill.description,
+		disableModelInvocation: skill.disableModelInvocation,
+		source: skill.sourceInfo.scope === "project" ? "project" : "user",
+		order,
+	}));
 	const now = Date.now();
 	const agentDir = getAgentDir();
 	if (loadSkillsCache && loadSkillsCache.cwd === cwd && loadSkillsCache.agentDir === agentDir && now - loadSkillsCache.timestamp < LOAD_SKILLS_CACHE_TTL_MS) {
@@ -654,7 +664,7 @@ export function resolveSkills(
 	const resolved: ResolvedSkill[] = [];
 	const missing: string[] = [];
 	const localByName = new Map<string, CachedSkillEntry>();
-	if (localSkillPaths?.length) {
+	if (localSkillPaths?.length && !isFeishuHost()) {
 		const agentDir = getAgentDir();
 		const localEntries = collectFilesystemSkills(cwd, agentDir, localSkillPaths.map((entry) => ({
 			path: path.resolve(localBaseDir ?? cwd, entry),

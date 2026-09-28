@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { findConfiguredProjectRoot } from "../../agents/agents.ts";
 import { getAgentDir, getProjectConfigDir } from "../../shared/utils.ts";
+import { isFeishuHost } from "../../shared/feishu-host.ts";
 import { isMcpServerDefinition, loadAgentPluginMcpServers, loadPackageMcpServers, type McpServerDefinition } from "./mcp-config-sources.ts";
 import {
 	normalizeMcpDirectToolSelectors,
@@ -264,6 +265,7 @@ function loadMcpConfig(cwd: string): McpConfig {
 function getConfigPaths(projectRoot: string): string[] {
 	const agentDir = getAgentDir();
 	const projectDir = getProjectConfigDir(projectRoot);
+	if (isFeishuHost()) return [path.join(agentDir, "mcp-adapter.json"), path.join(projectDir, "mcp-adapter.json")];
 	// pi-mcp-adapter 3.x reads mcp-adapter.json. Pi's own mcp.json files belong to
 	// Pi's built-in MCP support, so servers there are never adapter-registered.
 	const candidates = [
@@ -323,6 +325,7 @@ function mergeConfigs(base: McpConfig, next: McpConfig): McpConfig {
 }
 
 function expandImports(config: McpConfig, cwd: string): McpConfig {
+	if (isFeishuHost()) return { ...config, imports: undefined };
 	if (!config.imports?.length) return config;
 
 	const importedServers: Record<string, ServerEntry> = {};

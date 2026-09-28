@@ -14,6 +14,7 @@ import type { ResolvedSubagentCapabilityCeiling } from "../shared/capability-cei
 import { previewSimpleWorkflowRun } from "../../workflows/scripted-workflow.ts";
 import { resolveGitRepositoryIdentity } from "../../workflows/chat-progress.ts";
 import { getConfigDirName } from "../../shared/utils.ts";
+import { readFeishuContext } from "../../shared/feishu-host.ts";
 import { normalizeWorktreeBaseRef } from "../shared/worktree.ts";
 import { deepFreezeWorkflowArgs, normalizeWorkflowArgs } from "../../workflows/workflow-resources.ts";
 
@@ -234,9 +235,10 @@ function assertScheduleRoot(root: string, projectCwd: string | undefined, create
 		if (create) fs.mkdirSync(root, { recursive: true, mode: 0o700 });
 		return;
 	}
+	const feishu = readFeishuContext();
 	let projectPath: string;
 	try {
-		projectPath = fs.realpathSync.native(projectCwd);
+		projectPath = fs.realpathSync.native(feishu?.agentHome ?? projectCwd);
 	} catch (error) {
 		if (!create && (error as NodeJS.ErrnoException).code === "ENOENT") return;
 		throw error;
@@ -248,7 +250,7 @@ function assertScheduleRoot(root: string, projectCwd: string | undefined, create
 		existing = parent;
 	}
 	const existingPath = fs.realpathSync.native(existing);
-	const sharedGitConfigRoot = pathWithin(projectPath, existingPath) ? undefined : resolveSharedGitConfigRoot(projectCwd);
+	const sharedGitConfigRoot = feishu || pathWithin(projectPath, existingPath) ? undefined : resolveSharedGitConfigRoot(projectCwd);
 	const isTrustedPath = (candidate: string): boolean => pathWithin(projectPath, candidate)
 		|| (sharedGitConfigRoot !== undefined && pathWithin(sharedGitConfigRoot, candidate));
 	if (!isTrustedPath(existingPath)) throw new Error(`Project schedule root '${root}' resolves outside the real project.`);

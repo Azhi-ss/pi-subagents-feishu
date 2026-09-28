@@ -11,9 +11,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ResourceLoader } from "@earendil-works/pi-coding-agent";
+import { isFeishuHost, isForeignAgentResource, readFeishuContext, type FeishuHostContext } from "../../shared/feishu-host.ts";
 import { pinChildCacheRetention } from "../../shared/child-cache-retention.ts";
 import { getAgentDir, PI_CODING_AGENT_PACKAGE_ROOT_ENV } from "../../shared/utils.ts";
+import { resolveSingleOutputClaimPath } from "./single-output.ts";
 import { resolvePackageSubpath } from "../background/runner-aliases.ts";
 import { PI_CODING_AGENT_PACKAGE, resolveInstalledPiPackageRoot, resolvePiPackageRoot } from "./pi-spawn.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
@@ -50,6 +52,14 @@ export type ChildSessionStorage =
 	| { kind: "dir"; sessionDir: string }
 	| { kind: "default" }
 	| { kind: "memory" };
+
+/** Session state must remain in the host's private home, including through symlinks. */
+export function assertFeishuSessionStorage(storage: ChildSessionStorage, agentHome: string): void {
+	const target = storage.kind === "file" ? storage.sessionFile : storage.kind === "dir" ? storage.sessionDir : undefined;
+	if (!target) return;
+	const relative = path.relative(resolveSingleOutputClaimPath(agentHome), resolveSingleOutputClaimPath(target));
+	if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error("Feishu child sessions must stay inside the Feishu agent home.");
+}
 
 export interface ChildSessionLaunch {
 	cwd: string;
@@ -145,6 +155,41 @@ export interface DefaultChildSessionFactoryOptions {
 
 type ModelRuntimeInstance = Awaited<ReturnType<PiCodingAgentModule["ModelRuntime"]["create"]>>;
 
+interface FeishuSubagentResources {
+	resourceLoader: ResourceLoader;
+	settingsManager: ReturnType<PiCodingAgentModule["SettingsManager"]["create"]>;
+	modelRuntime: ModelRuntimeInstance;
+}
+
+interface FeishuHostModule {
+	createFeishuSubagentResources(input: {
+		snapshot: FeishuHostContext;
+		cwd: string;
+		hooks: ChildHookExtension[];
+		extensionPaths: string[];
+		systemPrompt?: string;
+		appendSystemPrompt?: string;
+	}): Promise<FeishuSubagentResources>;
+}
+
+async function loadFeishuResources(launch: ChildSessionLaunch, snapshot: FeishuHostContext): Promise<FeishuSubagentResources> {
+	if (launch.extensionPaths.some(isForeignAgentResource)) throw new Error("Feishu children cannot load extensions from another agent's resource directories.");
+	const modulePath = process.env.FEISHU_SUBAGENT_HOST_MODULE;
+	if (!modulePath || !path.isAbsolute(modulePath)) throw new Error("Feishu children require an absolute FEISHU_SUBAGENT_HOST_MODULE path.");
+	const host: FeishuHostModule = await import(pathToFileURL(modulePath).href);
+	if (typeof host.createFeishuSubagentResources !== "function") throw new Error("Feishu host module does not export createFeishuSubagentResources.");
+	const resources = await host.createFeishuSubagentResources({
+		snapshot,
+		cwd: launch.cwd,
+		hooks: launch.hooks,
+		extensionPaths: launch.extensionPaths,
+		...(launch.systemPrompt !== undefined ? { systemPrompt: launch.systemPrompt } : {}),
+		...(launch.appendSystemPrompt !== undefined ? { appendSystemPrompt: launch.appendSystemPrompt } : {}),
+	});
+	if (!resources?.resourceLoader || !resources.settingsManager || !resources.modelRuntime) throw new Error("Feishu host returned incomplete child resources.");
+	return resources;
+}
+
 export type ParentProviderRegistry = Pick<ModelRuntimeInstance, "getRegisteredProviderIds" | "getRegisteredProviderConfig" | "getRegisteredNativeProvider">;
 
 function inheritParentProviders(modelRuntime: ModelRuntimeInstance, parentProviders: ParentProviderRegistry, claimedProviderIds: ReadonlySet<string>, onError: ((error: ChildSessionExtensionError) => void) | undefined): boolean {
@@ -212,7 +257,7 @@ function applyProcessEnv(values: Record<string, string | undefined> | undefined)
 	}
 }
 
-function flushQueuedProviderRegistrations(loader: InstanceType<PiCodingAgentModule["DefaultResourceLoader"]>, modelRuntime: ModelRuntimeInstance, onError: ((error: ChildSessionExtensionError) => void) | undefined, requiredPaths: ReadonlySet<string>): { claimedProviderIds: Set<string>; registered: boolean } {
+function flushQueuedProviderRegistrations(loader: ResourceLoader, modelRuntime: ModelRuntimeInstance, onError: ((error: ChildSessionExtensionError) => void) | undefined, requiredPaths: ReadonlySet<string>): { claimedProviderIds: Set<string>; registered: boolean } {
 	const claimedProviderIds = new Set<string>();
 	if (!("getExtensions" in loader) || typeof loader.getExtensions !== "function") return { claimedProviderIds, registered: false };
 	const { runtime } = loader.getExtensions();
@@ -251,6 +296,7 @@ function flushQueuedProviderRegistrations(loader: InstanceType<PiCodingAgentModu
  */
 export async function loadHostPiCodingAgent(): Promise<PiCodingAgentModule> {
 	const overrideRoot = process.env[PI_CODING_AGENT_PACKAGE_ROOT_ENV]?.trim() || undefined;
+	if (isFeishuHost() && !overrideRoot) throw new Error("Feishu children require the host Pi SDK package root.");
 	const runningRoot = resolvePiPackageRoot();
 	const selectedOverride = runningRoot === undefined ? overrideRoot : undefined;
 	const root = runningRoot ?? selectedOverride ?? resolveInstalledPiPackageRoot();
@@ -305,19 +351,24 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 	};
 	return {
 		async create(launch) {
+			// Read the immutable launch snapshot before any async work; descendants retain
+			// the original user's policy even if the parent starts another turn.
+			const snapshot = readFeishuContext(launch.runtime.feishuContextPath);
+			if (snapshot) assertFeishuSessionStorage(launch.storage, snapshot.agentHome);
 			const pi = await loadPiCodingAgent();
-			const modelRuntime = launch.parentProviderRegistry
+			const feishu = snapshot ? await loadFeishuResources(launch, snapshot) : undefined;
+			const modelRuntime = feishu?.modelRuntime ?? (launch.parentProviderRegistry
 				? await pi.ModelRuntime.create()
-				: await sharedRuntime(pi);
-			const agentDir = getAgentDir();
-			const settingsManager = pi.SettingsManager.create(launch.cwd, agentDir);
+				: await sharedRuntime(pi));
+			const agentDir = snapshot?.agentHome ?? getAgentDir();
+			const settingsManager = feishu?.settingsManager ?? pi.SettingsManager.create(launch.cwd, agentDir);
 			// Foreground children share Pi's global theme with the parent, so reinitializing it
 			// would overwrite the parent's active light/dark appearance. Detached runners have
 			// no initialized theme and must initialize one for headless extension renderers.
 			const themeKey = Symbol.for("@earendil-works/pi-coding-agent:theme");
 			const themeInitialized = Boolean((globalThis as Record<symbol, unknown>)[themeKey]);
 			if (!themeInitialized && typeof pi.initTheme === "function") pi.initTheme(settingsManager.getTheme());
-			const loader = new pi.DefaultResourceLoader({
+			const loader = feishu?.resourceLoader ?? new pi.DefaultResourceLoader({
 				cwd: launch.cwd,
 				agentDir,
 				settingsManager,
@@ -335,7 +386,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 			const open = async () => {
 				const requiredPaths = new Set((launch.requiredExtensions ?? []).map(({ path }) => path));
 				applyProcessEnv(launch.processEnv);
-				if (!resetExtensionCacheOnReload(loader) && (launch.ambientExtensions || launch.extensionPaths.length)) launch.onExtensionError?.({ extensionPath: "<loader>", event: "load", error: new Error("pi's extension cache reset is unavailable; extensions loaded into this child share module state with other sessions in this process.") });
+				if (!feishu && !resetExtensionCacheOnReload(loader) && (launch.ambientExtensions || launch.extensionPaths.length)) launch.onExtensionError?.({ extensionPath: "<loader>", event: "load", error: new Error("pi's extension cache reset is unavailable; extensions loaded into this child share module state with other sessions in this process.") });
 				await loader.reload();
 				const loadErrors = requiredPaths.size > 0
 					? loader.getExtensions().errors.filter(({ path }) => requiredPaths.has(path)) : [];
@@ -459,7 +510,10 @@ function createLazyPlacementFactory(local: ChildSessionFactory): ChildSessionFac
 	let placed: ChildSessionFactory | undefined;
 	const factory = async () => placed ??= (await import("./herdr-placed-run.ts")).createPlacementAwareChildSessionFactory(local);
 	return {
-		async create(launch) { return launch.machine ? (await factory()).create(launch) : local.create(launch); },
+		async create(launch) {
+			if (launch.machine && (isFeishuHost() || launch.runtime.feishuContextPath)) throw new Error("Feishu child resources are only available on the local host.");
+			return launch.machine ? (await factory()).create(launch) : local.create(launch);
+		},
 		async dispose() { if (placed) await placed.dispose(); else await local.dispose(); },
 	};
 }

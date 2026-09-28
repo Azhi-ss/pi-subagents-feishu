@@ -60,6 +60,8 @@ export interface ChildSupervisorMetadata {
  * that hosts the child session builds it and passes it to the hooks directly.
  */
 export interface ChildRuntimeConfig {
+	/** Immutable Feishu host snapshot captured from the original user turn. */
+	feishuContextPath?: string;
 	cwd?: string;
 	runId?: string;
 	agent?: string;

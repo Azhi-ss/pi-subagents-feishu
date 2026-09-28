@@ -1,3 +1,4 @@
+import { isFeishuHost } from "../../shared/feishu-host.ts";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as fs from "node:fs";
@@ -175,6 +176,7 @@ export function runExternalCli(input: {
 	onStdout?: (chunk: Buffer) => void;
 	onStderr?: (chunk: Buffer) => void;
 }): Promise<ExternalCliRunResult> {
+	if (isFeishuHost()) throw new Error("Feishu child resources and guard require the local native Pi runner.");
 	const limits = {
 		stdoutLogBytes: narrowLimit(input.limits?.stdoutLogBytes, MAX_RAW_LOG_BYTES, "stdoutLogBytes"),
 		stderrLogBytes: narrowLimit(input.limits?.stderrLogBytes, MAX_RAW_LOG_BYTES, "stderrLogBytes"),

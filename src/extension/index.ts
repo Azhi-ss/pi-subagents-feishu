@@ -1,3 +1,4 @@
+import { isFeishuHost } from "../shared/feishu-host.ts";
 /**
  * Subagent Tool
  *
@@ -560,7 +561,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		advertisedAgents = [];
 		advertisedContext = { cwd: ctx.cwd, model: ctx.model };
 		globalRoot = null;
-		advertisementReady = resolveGlobalNpmRoot().then((root) => {
+		advertisementReady = (isFeishuHost() ? Promise.resolve(null) : resolveGlobalNpmRoot()).then((root) => {
 			if (generation !== advertisementGeneration) return;
 			globalRoot = root;
 			refreshAdvertisedAgents();

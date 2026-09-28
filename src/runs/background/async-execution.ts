@@ -1,6 +1,7 @@
 /**
  * Async execution logic for subagent tool
  */
+import { currentFeishuContextPath, isFeishuHost, withFeishuContext } from "../../shared/feishu-host.ts";
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -726,9 +727,11 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, initialStatus: Om
 				: nativeRunnerSupported
 				? [...preload, "--experimental-strip-types", runner, cfgPath]
 				: [...preload, jitiCliPath!, runner, cfgPath];
+		const inheritedFeishuContext = currentFeishuContextPath();
 		const runnerEnv: NodeJS.ProcessEnv = {
 			...omitGitRoutingEnv(omitExtensionBindingsEnv(process.env)),
 			...childCacheRetentionEnv(),
+			...(inheritedFeishuContext ? { FEISHU_SUBAGENT_CONTEXT: inheritedFeishuContext } : {}),
 			[PI_CODING_AGENT_PACKAGE_ROOT_ENV]: binaryHost ? undefined : piPackageRoot,
 			// npm must override inherited bundled layouts (#2071); binaries retain release assets.
 			PI_PACKAGE_DIR: binaryHost ? process.env.PI_PACKAGE_DIR : piPackageRoot,
@@ -987,6 +990,7 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
 				throw new AsyncStartValidationError(error instanceof Error ? error.message : String(error));
 			}
 		}
+		if (externalRunner && isFeishuHost()) throw new AsyncStartValidationError("Feishu child resources and guard require the local native Pi runner.");
 		if (externalRunner) {
 			const unsupported: string[] = [];
 			if (s.model !== undefined) unsupported.push("model override");
@@ -1338,6 +1342,14 @@ export function executeAsyncChain(
 	id: string,
 	params: AsyncChainParams,
 ): AsyncExecutionResult {
+	const contextPath = params.ctx.childRuntime?.feishuContextPath ?? currentFeishuContextPath();
+	return withFeishuContext(contextPath, () => executeAsyncChainWithFeishuContext(id, params));
+}
+
+function executeAsyncChainWithFeishuContext(
+	id: string,
+	params: AsyncChainParams,
+): AsyncExecutionResult {
 	const {
 		chain,
 		agents,
@@ -1678,6 +1690,14 @@ export function executeAsyncSingle(
 	id: string,
 	params: AsyncSingleParams,
 ): AsyncExecutionResult | Promise<AsyncExecutionResult> {
+	const contextPath = params.ctx.childRuntime?.feishuContextPath ?? currentFeishuContextPath();
+	return withFeishuContext(contextPath, () => executeAsyncSingleWithFeishuContext(id, params));
+}
+
+function executeAsyncSingleWithFeishuContext(
+	id: string,
+	params: AsyncSingleParams,
+): AsyncExecutionResult | Promise<AsyncExecutionResult> {
 	const {
 		agent,
 		agentConfig,
@@ -1720,6 +1740,7 @@ export function executeAsyncSingle(
 	const externalRunner = agentConfig.runner?.type === "external-cli" || agentConfig.runner?.type === "external-job";
 	const externalRunnerType = agentConfig.runner?.type;
 	const permissionRules = resolvePermissionRules(ctx.permissions, agentConfig.permissions);
+	if (externalRunner && isFeishuHost()) return formatAsyncStartError("single", "Feishu child resources and guard require the local native Pi runner.");
 	if (externalRunner) {
 		const unsupported: string[] = [];
 		if (params.modelOverride !== undefined) unsupported.push("model override");

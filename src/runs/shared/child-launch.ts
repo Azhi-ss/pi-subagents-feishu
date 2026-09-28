@@ -6,6 +6,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { currentFeishuContextPath, readFeishuContext, withFeishuContext } from "../../shared/feishu-host.ts";
 import type { ChildWatchdogConfig, ChildWatchdogStatusEvent } from "../../watchdog/child-status.ts";
 import type { ThinkingLevel } from "../../shared/model-info.ts";
 import { intersectThinkingCeilings } from "../../shared/thinking-ceiling.ts";
@@ -34,7 +35,7 @@ import {
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
 import { createCapturedChildHooks, withChildSessionErrorReporting } from "./child-hooks.ts";
 import type { ChildTranscriptWriter } from "../../shared/child-transcript.ts";
-import type { ChildSessionLaunch, ChildSessionStorage } from "./child-session.ts";
+import { assertFeishuSessionStorage, type ChildSessionLaunch, type ChildSessionStorage } from "./child-session.ts";
 import { resolveRequiredChildExtensions, type RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
 
 /** Environment variable pi-mcp-adapter reads for the tools a child may expose. */
@@ -45,11 +46,12 @@ export const MCP_DIRECT_TOOLS_ENV = "MCP_DIRECT_TOOLS";
  * launches inherits. Serialized into the background runner config; the
  * foreground path passes the executor's full `ChildRuntimeConfig`.
  */
-export type InheritedChildRuntime = Pick<ChildRuntimeConfig, "depth" | "maxDepth" | "nestedRoute" | "nestedParent" | "capabilityCeiling" | "thinkingCeiling" | "runFanoutBudget" | "requiredExtensions">;
+export type InheritedChildRuntime = Pick<ChildRuntimeConfig, "depth" | "maxDepth" | "nestedRoute" | "nestedParent" | "capabilityCeiling" | "thinkingCeiling" | "runFanoutBudget" | "requiredExtensions" | "feishuContextPath">;
 
 export function inheritedChildRuntime(config: ChildRuntimeConfig | undefined): InheritedChildRuntime | undefined {
 	if (!config) return undefined;
 	return {
+		...(config.feishuContextPath ? { feishuContextPath: config.feishuContextPath } : {}),
 		depth: config.depth,
 		...(config.maxDepth !== undefined ? { maxDepth: config.maxDepth } : {}),
 		...(config.nestedRoute ? { nestedRoute: config.nestedRoute } : {}),
@@ -167,20 +169,24 @@ function childProcessEnv(input: BuildInProcessChildLaunchInput, toolPlan: PiLaun
 	return env;
 }
 
-function childStorage(input: BuildInProcessChildLaunchInput): ChildSessionStorage {
-	if (input.sessionFile) {
-		fs.mkdirSync(path.dirname(input.sessionFile), { recursive: true });
-		return { kind: "file", sessionFile: input.sessionFile };
-	}
-	if (!input.sessionEnabled) return { kind: "memory" };
-	if (input.sessionDir) {
-		fs.mkdirSync(input.sessionDir, { recursive: true });
-		return { kind: "dir", sessionDir: input.sessionDir };
-	}
-	return { kind: "default" };
+function childStorage(input: BuildInProcessChildLaunchInput, agentHome?: string): ChildSessionStorage {
+	const storage: ChildSessionStorage = input.sessionFile ? { kind: "file", sessionFile: input.sessionFile }
+		: !input.sessionEnabled ? { kind: "memory" }
+			: input.sessionDir ? { kind: "dir", sessionDir: input.sessionDir } : { kind: "default" };
+	if (agentHome) assertFeishuSessionStorage(storage, agentHome);
+	if (storage.kind === "file") fs.mkdirSync(path.dirname(storage.sessionFile), { recursive: true });
+	else if (storage.kind === "dir") fs.mkdirSync(storage.sessionDir, { recursive: true });
+	return storage;
 }
 
 export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput): InProcessChildLaunch {
+	const contextPath = input.inherited?.feishuContextPath ?? currentFeishuContextPath();
+	return withFeishuContext(contextPath, () => buildChildLaunchWithFeishuContext(input));
+}
+
+function buildChildLaunchWithFeishuContext(input: BuildInProcessChildLaunchInput): InProcessChildLaunch {
+	const feishuContextPath = currentFeishuContextPath();
+	const feishu = readFeishuContext(feishuContextPath);
 	const requiredExtensions = input.requiredExtensions ?? input.inherited?.requiredExtensions ?? resolveRequiredChildExtensions(input.parentSessionId);
 	const agentCapabilityCeiling: ResolvedSubagentCapabilityCeiling | undefined = input.descendantAllowedAgents === undefined
 		? undefined
@@ -243,6 +249,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 	const structuredTerminalState = { captured: false };
 
 	const config: ChildRuntimeConfig = {
+		...(feishuContextPath ? { feishuContextPath } : {}),
 		cwd: input.cwd,
 		...(input.runId ? { runId: input.runId } : {}),
 		agent: input.childAgentName,
@@ -263,7 +270,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		...(toolPlan.requiredExtensions.length > 0 ? { requiredExtensions: toolPlan.requiredExtensions } : {}),
 		inheritProjectContext: input.inheritProjectContext,
 		inheritGlobalContext: input.inheritGlobalContext,
-		inheritSkills: input.inheritSkills,
+		inheritSkills: feishu ? true : input.inheritSkills,
 		...(input.forkCacheKey?.trim() ? { forkCacheKey: input.forkCacheKey.trim() } : {}),
 		...(permissions ? { permissions } : {}),
 		...(input.toolBudget ? { toolBudget: input.toolBudget } : {}),
@@ -298,7 +305,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 	const capturedHooks = createCapturedChildHooks(config);
 
 	const extensionPaths = toolPlan.extensionArgs.filter((extensionPath) => !isSubagentRuntimeExtensionPath(extensionPath));
-	const ambientExtensions = input.host === "runner" && !toolPlan.disableAmbientExtensions;
+	const ambientExtensions = !feishu && input.host === "runner" && !toolPlan.disableAmbientExtensions;
 	const launchResolvedExtensions = projectLaunchResolvedChildExtensions({
 		runtimeExtensions: toolPlan.runtimeExtensions,
 		configuredExtensions: toolPlan.configuredExtensions,
@@ -313,7 +320,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		cwd: input.cwd,
 		...(input.machine ? { machine: input.machine } : {}),
 		...(input.machine ? { remoteResources: { agent: input.childAgentName, ...(input.remoteSkillNames ? { skills: input.remoteSkillNames } : {}), ...(input.remoteReads !== undefined ? { reads: input.remoteReads } : {}), ...(toolPlan.explicitToolAllowlist ? { toolCeiling: [...toolPlan.effectiveToolAllowlist] } : toolPlan.capabilityCeiling?.allowedTools ? { toolCeiling: [...toolPlan.capabilityCeiling.allowedTools] } : {}) } } : {}),
-		storage: childStorage(input),
+		storage: childStorage(input, feishu?.agentHome),
 		...(input.model ? { model: input.model } : {}),
 		...(toolPlan.explicitToolAllowlist ? { tools: toolPlan.effectiveToolAllowlist } : {}),
 		...(!toolPlan.explicitToolAllowlist && toolPlan.excludeTools.length > 0 ? { excludeTools: toolPlan.excludeTools } : {}),
@@ -323,7 +330,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		hooks: capturedHooks.hooks,
 		...(input.host === "runner" ? { processEnv: childProcessEnv(input, toolPlan) } : {}),
 		runtime: config,
-		noSkills: !input.inheritSkills,
+		noSkills: feishu ? false : !input.inheritSkills,
 		noContextFiles: !input.inheritProjectContext,
 		...(taggedPrompt !== undefined
 			? input.systemPromptMode === "replace" ? { systemPrompt: taggedPrompt } : { appendSystemPrompt: taggedPrompt }

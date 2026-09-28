@@ -1,6 +1,7 @@
 /**
  * Core execution logic for running subagents
  */
+import { currentFeishuContextPath, withFeishuContext } from "../../shared/feishu-host.ts";
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
@@ -2070,6 +2071,17 @@ async function runSyncCompletion(
  * receipt. Detachment is same-runtime only: it does not adopt or daemonize work.
  */
 export async function runSync(
+	runtimeCwd: string,
+	agents: AgentConfig[],
+	agentName: string,
+	task: string,
+	options: RunSyncOptions,
+): Promise<SingleResult> {
+	const contextPath = options.childRuntime?.feishuContextPath ?? currentFeishuContextPath();
+	return withFeishuContext(contextPath, () => runSyncWithFeishuContext(runtimeCwd, agents, agentName, task, options));
+}
+
+async function runSyncWithFeishuContext(
 	runtimeCwd: string,
 	agents: AgentConfig[],
 	agentName: string,
