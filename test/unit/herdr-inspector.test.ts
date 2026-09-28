@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, it } from "node:test";
+import { withReferencedDeadline } from "../support/referenced-deadline.ts";
 import { readHerdrInspectorBinding } from "../../src/inspectors/herdr/actions.ts";
 import { handleInspectorAction } from "../../src/inspectors/actions.ts";
 import { createHerdrInspectorPlugin } from "../../src/inspectors/herdr/plugin.ts";
@@ -83,7 +84,8 @@ describe("Herdr inspector", () => {
 		if (!missingResult.ok) assert.equal(missingResult.error.code, "HERDR_UNAVAILABLE");
 
 		const timeout = createHerdrClient({ spawn: (() => fakeChild()) as never });
-		const timeoutResult = await timeout.run(["pane", "get", "w1:p2"], { timeoutMs: 5 });
+		// A real child process keeps the event loop alive while its timeout is unref'ed.
+		const timeoutResult = await withReferencedDeadline(timeout.run(["pane", "get", "w1:p2"], { timeoutMs: 5 }), 5_000);
 		assert.equal(timeoutResult.ok, false);
 		if (!timeoutResult.ok) assert.equal(timeoutResult.error.code, "TIMEOUT");
 

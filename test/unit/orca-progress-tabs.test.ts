@@ -8,6 +8,7 @@ import * as path from "node:path";
 import { createOrcaProgressTab, resolveOrcaCommand, resolvePiSessionId } from "../../src/runs/shared/orca-progress-tabs.ts";
 import { TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 import { writeNodeCommand } from "../support/node-command.ts";
+import { withReferencedDeadline } from "../support/referenced-deadline.ts";
 
 const tempDirs: string[] = [];
 
@@ -183,7 +184,7 @@ test("malformed optional observer metadata cannot break child execution", { skip
 	assert.ok(tab);
 	await tab.finish("completed");
 	// Capture precedes the watchdog's final manifest/queue writes; wait for its close.
-	await tab.creationSettled;
+	await withReferencedDeadline(tab.creationSettled, 5_000);
 	const args = JSON.parse(fs.readFileSync(capture, "utf-8")) as string[];
 	assert.equal(args[args.indexOf("--title") + 1], "subagents · subagent · 1");
 	const manifestDir = path.join(dir, ".pi", "subagents", "views", "orca");
@@ -245,7 +246,7 @@ test("creationSettled publishes the final manifest after capture and finish", { 
 		assert.equal(JSON.parse(fs.readFileSync(manifestPath, "utf-8")).state, "opening");
 	} finally {
 		fs.writeFileSync(release, "");
-		await tab.creationSettled;
+		await withReferencedDeadline(tab.creationSettled, 5_000);
 		await tab.finish("completed");
 	}
 	assert.equal(settled, true);
@@ -279,7 +280,7 @@ test("enabled tabs use a worktree sequence and successful Pi sessions get cleanu
 	assert.equal(resolvePiSessionId(path.join(dir, `missing_${sessionId}.jsonl`)), undefined);
 	await tab.finish("completed", sessionFile);
 	// Capture precedes the watchdog's final manifest/queue writes; wait for its close.
-	await tab.creationSettled;
+	await withReferencedDeadline(tab.creationSettled, 5_000);
 	const args = JSON.parse(fs.readFileSync(capture, "utf-8")) as string[];
 	assert.deepEqual(args.slice(0, 2), ["terminal", "create"]);
 	assert.equal(args[args.indexOf("--worktree") + 1], `path:${path.resolve(dir)}`);
@@ -321,7 +322,7 @@ test("enabled tabs use a worktree sequence and successful Pi sessions get cleanu
 	});
 	assert.ok(secondTab);
 	await secondTab.finish("failed", sessionFile);
-	await secondTab.creationSettled;
+	await withReferencedDeadline(secondTab.creationSettled, 5_000);
 	const secondArgs = JSON.parse(fs.readFileSync(secondCapture, "utf-8")) as string[];
 	assert.equal(secondArgs[secondArgs.indexOf("--title") + 1], "subagents · worker · 2");
 	const secondLog = fs.readdirSync(progressDir).find((name) => name.startsWith(`${runId}-second-0-`) && name.endsWith(".log"));
@@ -446,7 +447,7 @@ test("same-worktree Orca creates wait for the previous numbered tab", { skip: pr
 	assert.ok(first);
 	assert.ok(second);
 	await waitForFile(secondCapture);
-	await Promise.all([first.creationSettled, second.creationSettled]);
+	await withReferencedDeadline(Promise.all([first.creationSettled, second.creationSettled]), 5_000);
 	const titles = fs.readFileSync(order, "utf-8").trim().split("\n");
 	assert.deepEqual(titles, ["subagents · worker · 1", "subagents · reviewer · 2"]);
 	first.finish("failed");
@@ -584,7 +585,7 @@ test("create stdout preserves pretty-printed JSON in the observer manifest", { s
 	const runId = `progress-pretty-json-${Date.now()}`;
 	const tab = createOrcaProgressTab({ cwd: dir, runId, agent: "worker", index: 0, config: { enabled: true }, command: fakeOrca });
 	assert.ok(tab);
-	await tab.creationSettled;
+	await withReferencedDeadline(tab.creationSettled, 5_000);
 	const manifestDir = path.join(dir, ".pi", "subagents", "views", "orca");
 	const manifestName = fs.readdirSync(manifestDir).find((name) => name.startsWith(`${runId}-0-`) && name.endsWith(".json"));
 	assert.ok(manifestName);
