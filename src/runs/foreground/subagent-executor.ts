@@ -1,3 +1,4 @@
+import { currentFeishuContextPath, withFeishuContext } from "../../shared/feishu-host.ts";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -7895,5 +7896,12 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		for (const owner of scheduledOwnerExecutors.get(ownerId)?.values() ?? []) yield owner.state;
 	}
 
-	return { execute: executeWithSingleDispatchGuard, executePublic, executeDelegated, executeScheduled, getCurrentSupervisorOwnerStates };
+	// Freeze the host's original user turn before admission, queueing, or workflow awaits.
+	const pinFeishuContext = <Args extends unknown[], Result>(run: (...args: Args) => Result) => (...args: Args): Result =>
+		withFeishuContext(deps.childRuntime?.feishuContextPath ?? currentFeishuContextPath(), () => run(...args));
+	return {
+		execute: pinFeishuContext(executeWithSingleDispatchGuard), executePublic: pinFeishuContext(executePublic),
+		executeDelegated: pinFeishuContext(executeDelegated), executeScheduled: pinFeishuContext(executeScheduled),
+		getCurrentSupervisorOwnerStates,
+	};
 }

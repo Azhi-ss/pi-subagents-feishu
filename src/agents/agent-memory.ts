@@ -16,6 +16,8 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir, getProjectConfigDir } from "../shared/utils.ts";
+import { readFeishuContext } from "../shared/feishu-host.ts";
+import { getProjectSubagentsDir } from "../shared/artifacts.ts";
 import { findNearestGitRoot, findNearestProjectRoot, type AgentConfig, type AgentMemoryConfig } from "./agents.ts";
 
 export const AGENT_MEMORY_DIR_NAME = "agent-memory";
@@ -285,9 +287,10 @@ export function buildAgentMemoryInjection(agent: AgentConfig, cwd: string): stri
 	if (memory.scope === "user") {
 		rootDir = path.join(getAgentDir(), AGENT_MEMORY_DIR_NAME);
 	} else {
-		const projectRoot = findNearestProjectRoot(cwd) ?? findNearestGitRoot(cwd);
+		const feishu = readFeishuContext();
+		const projectRoot = feishu?.projectRoot ?? findNearestProjectRoot(cwd) ?? findNearestGitRoot(cwd);
 		if (!projectRoot) return "";
-		rootDir = path.join(getProjectConfigDir(resolveProjectMemoryRoot(projectRoot)), AGENT_MEMORY_DIR_NAME);
+		rootDir = path.join(feishu ? getProjectSubagentsDir(projectRoot) : getProjectConfigDir(resolveProjectMemoryRoot(projectRoot)), AGENT_MEMORY_DIR_NAME);
 	}
 
 	const resolved = resolveMemoryDir(rootDir, memory.path);

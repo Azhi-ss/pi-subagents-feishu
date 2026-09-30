@@ -83,9 +83,16 @@ describe("runner dispatcher honours the resolved idle timeout", () => {
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		const address = server.address();
 		assert.ok(address && typeof address === "object");
+		const originalNoProxy = { no_proxy: process.env.no_proxy, NO_PROXY: process.env.NO_PROXY };
+		// Exercise the local server's idle deadline, never an ambient HTTP proxy.
+		process.env.no_proxy = process.env.NO_PROXY = "127.0.0.1";
 		try {
 			await run(`http://127.0.0.1:${address.port}/`);
 		} finally {
+			for (const [key, value] of Object.entries(originalNoProxy)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
 			server.closeAllConnections();
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 		}

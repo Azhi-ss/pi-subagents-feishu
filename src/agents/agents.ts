@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import type { AcceptanceInput, AcceptanceRole, AgentRunnerConfig, JsonSchemaObject, OutputMode, ToolBudgetConfig } from "../shared/types.ts";
 import { CODE_OWNED_EXTERNAL_CLI_ADAPTER_LABEL, isCodeOwnedExternalCliAdapterId, parseExternalCliCapabilityNarrowing, validateCodeOwnedProfileRunner } from "../runs/shared/external-cli-contract.ts";
 import { getAgentDir, getProjectConfigDir } from "../shared/utils.ts";
+import { isFeishuHost, isForeignAgentResource, readFeishuContext } from "../shared/feishu-host.ts";
 import { expandHomePath } from "../shared/settings.ts";
 import { KNOWN_FIELDS } from "./agent-serializer.ts";
 import { parseChain, parseJsonChain } from "./chain-serializer.ts";
@@ -479,6 +480,7 @@ function resolveSettingsPackageRoot(source: string, baseDir: string): string | u
 }
 
 function getGlobalNpmRoot(): string | null {
+	if (isFeishuHost()) return null;
 	const offline = process.env.PI_OFFLINE?.toLowerCase();
 	if (offline === "1" || offline === "true" || offline === "yes") return null;
 	if (cachedGlobalNpmRoot !== null) return cachedGlobalNpmRoot;
@@ -611,10 +613,10 @@ function collectSettingsPackageRoots(settingsFile: string, baseDir: string): str
 function collectPackageSubagentPaths(cwd: string, options: { includeUser: boolean; includeProject: boolean; globalNpmRoot?: string | null } = { includeUser: true, includeProject: true }): PackageSubagentPaths {
 	const agentDir = getAgentDir();
 	const projectRoot = findConfiguredProjectRoot(cwd) ?? cwd;
-	const packageRoots: Array<{ root: string; scope: PackageScope }> = [
+	const packageRoots: Array<{ root: string; scope: PackageScope }> = isFeishuHost() ? [] : [
 		{ root: projectRoot, scope: "root" },
 	];
-	const watchPaths: string[] = [path.join(projectRoot, "package.json")];
+	const watchPaths: string[] = isFeishuHost() ? [] : [path.join(projectRoot, "package.json")];
 	const settingsErrors: Partial<Record<PackageSettingsScope, Error>> = {};
 	const collectScopedSettingsRoots = (scope: PackageSettingsScope, settingsFile: string, baseDir: string): string[] => {
 		try {
@@ -632,18 +634,18 @@ function collectPackageSubagentPaths(cwd: string, options: { includeUser: boolea
 	if (options.includeProject) {
 		const projectConfigDir = getProjectConfigDir(projectRoot);
 		const nodeModulesDir = path.join(projectConfigDir, "npm", "node_modules");
-		packageRoots.push(...collectPackageRootsFromNodeModules(nodeModulesDir, watchPaths).map((root) => ({ root, scope: "project" as const })));
+		if (!isFeishuHost()) packageRoots.push(...collectPackageRootsFromNodeModules(nodeModulesDir, watchPaths).map((root) => ({ root, scope: "project" as const })));
 		packageRoots.push(...collectScopedSettingsRoots("project", path.join(projectConfigDir, "settings.json"), projectConfigDir).map((root) => ({ root, scope: "project" as const })));
 	}
 
 	if (options.includeUser) {
 		const nodeModulesDir = path.join(agentDir, "npm", "node_modules");
-		packageRoots.push(...collectPackageRootsFromNodeModules(nodeModulesDir, watchPaths).map((root) => ({ root, scope: "user" as const })));
+		if (!isFeishuHost()) packageRoots.push(...collectPackageRootsFromNodeModules(nodeModulesDir, watchPaths).map((root) => ({ root, scope: "user" as const })));
 		packageRoots.push(...collectScopedSettingsRoots("user", path.join(agentDir, "settings.json"), agentDir).map((root) => ({ root, scope: "user" as const })));
 	}
 
 	if (options.includeUser) {
-		const globalRoot = options.globalNpmRoot === undefined ? getGlobalNpmRoot() : options.globalNpmRoot;
+		const globalRoot = isFeishuHost() ? null : options.globalNpmRoot === undefined ? getGlobalNpmRoot() : options.globalNpmRoot;
 		if (globalRoot) {
 			packageRoots.push(...collectPackageRootsFromNodeModules(globalRoot, watchPaths).map((root) => ({ root, scope: "user" as const })));
 		}
@@ -655,6 +657,7 @@ function collectPackageSubagentPaths(cwd: string, options: { includeUser: boolea
 	const agents: PackageSubagentPath[] = [];
 	const chains: PackageChainPath[] = [];
 	for (const { root: packageRoot, scope } of packageRoots) {
+		if (isFeishuHost() && isForeignAgentResource(packageRoot)) continue;
 		const resolvedRoot = path.resolve(packageRoot);
 		const scopes = seenRoots.get(resolvedRoot);
 		if (scopes !== undefined) {
@@ -832,10 +835,12 @@ function cloneOverrideValue(override: BuiltinAgentOverrideConfig): BuiltinAgentO
 }
 
 function isProjectRootCandidate(dir: string): boolean {
-	return isDirectory(getProjectConfigDir(dir)) || isDirectory(path.join(dir, ".agents"));
+	return isDirectory(getProjectConfigDir(dir)) || (!isFeishuHost() && isDirectory(path.join(dir, ".agents")));
 }
 
 function findProjectRootCandidates(cwd: string): string[] {
+	const feishu = readFeishuContext();
+	if (feishu) return [feishu.projectRoot];
 	const roots: string[] = [];
 	const windowsProfile = process.env.HOMEDRIVE && process.env.HOMEPATH
 		? `${process.env.HOMEDRIVE}${process.env.HOMEPATH}`
@@ -885,6 +890,8 @@ export function findNearestProjectRoot(cwd: string): string | null {
 }
 
 export function findConfiguredProjectRoot(cwd: string): string | null {
+	const feishu = readFeishuContext();
+	if (feishu) return feishu.projectRoot;
 	const candidates = findProjectRootCandidates(cwd);
 	const nearestRoot = candidates[0];
 	if (!nearestRoot) return null;
@@ -1808,7 +1815,7 @@ export function removeBuiltinAgentOverrideFields(
 const DISCOVERY_PRUNED_DIR_NAMES = new Set([".git", "node_modules", ".pi", "sync-backups"]);
 
 function isDiscoveryNestedProjectRoot(dir: string): boolean {
-	return isDirectory(getProjectConfigDir(dir)) || isDirectory(path.join(dir, ".agents"));
+	return isDirectory(getProjectConfigDir(dir)) || (!isFeishuHost() && isDirectory(path.join(dir, ".agents")));
 }
 
 function shouldPruneDiscoveryDir(rootDir: string, dir: string, dirName: string): boolean {
@@ -2355,9 +2362,9 @@ function resolveNearestProjectAgentDirs(cwd: string): { readDirs: string[]; cand
 
 	const legacyDir = path.join(projectRoot, ".agents");
 	const preferredDir = path.join(getProjectConfigDir(projectRoot), "agents");
-	const candidateDirs = [legacyDir, preferredDir];
+	const candidateDirs = isFeishuHost() ? [preferredDir] : [legacyDir, preferredDir];
 	const readDirs: string[] = [];
-	if (isDirectory(legacyDir)) readDirs.push(legacyDir);
+	if (!isFeishuHost() && isDirectory(legacyDir)) readDirs.push(legacyDir);
 	if (isDirectory(preferredDir)) readDirs.push(preferredDir);
 
 	return { readDirs, candidateDirs, preferredDir };
@@ -2386,6 +2393,7 @@ export const EXTRA_AGENT_DIRS_ENV = "PI_SUBAGENT_EXTRA_AGENT_DIRS";
 // copying or symlinking them into the writable agent dir. Loaded as "user" source,
 // at lower precedence than agents the user placed in their own agent dir.
 function extraUserAgentDirs(): string[] {
+	if (isFeishuHost()) return [];
 	const raw = process.env[EXTRA_AGENT_DIRS_ENV];
 	if (!raw) return [];
 	return raw
@@ -2433,6 +2441,7 @@ function agentExclusionRoots(userSettingsPath: string, projectSettingsPath: stri
 
 function agentExclusions(roots: Array<{ resolved: string; real: string }>): (filePath: string) => boolean {
 	return (filePath) => {
+		if (isFeishuHost() && isForeignAgentResource(filePath)) return true;
 		if (!roots.length) return false;
 		if (roots.some((root) => isPathWithin(root.resolved, filePath))) return true;
 		const real = canonicalAgentPath(filePath);
@@ -2631,6 +2640,8 @@ function discoveryCacheKey(cwd: string, preferredModelProvider: string | undefin
 }
 
 function projectDiscoveryWatchPaths(cwd: string): string[] {
+	const feishu = readFeishuContext();
+	if (feishu) return [getProjectConfigDir(feishu.projectRoot)];
 	const paths: string[] = [];
 	let current = path.resolve(cwd);
 	while (true) {
@@ -2650,7 +2661,7 @@ function packageEntryIncluded(scope: AgentScope, packageScopes: PackageSubagentP
 function buildAgentDiscoverySources(cwd: string, preferredModelProvider?: string, globalNpmRoot?: string | null): AgentDiscoverySources {
 	const effectiveCwd = path.resolve(cwd);
 	const userDirOld = path.join(getAgentDir(), "agents");
-	const userDirNew = path.join(os.homedir(), ".agents");
+	const userDirNew = isFeishuHost() ? userDirOld : path.join(os.homedir(), ".agents");
 	const userChainDir = getUserChainDir();
 	const { readDirs: projectAgentDirs, candidateDirs: projectCandidateDirs, preferredDir: projectAgentsDir } = resolveNearestProjectAgentDirs(effectiveCwd);
 	const { readDirs: projectChainDirs, preferredDir: projectChainDir } = resolveNearestProjectChainDirs(effectiveCwd);
@@ -2663,7 +2674,7 @@ function buildAgentDiscoverySources(cwd: string, preferredModelProvider?: string
 	const projectScanDirs = settingsAgentScanDirs(readConfiguredAgentScanDirs(projectSettingsPath), isExcluded);
 
 	const builtinLoaded = loadAgentsFromDefinitionFiles(BUILTIN_AGENT_DEFINITION_FILES, "builtin");
-	const userLoaded = [...extraUserAgentDirs(), ...userScanDirs.dirs, userDirOld, userDirNew].filter((dir) => !isExcluded(dir)).map((dir, discoveryPriority): LoadedAgentDirectory => {
+	const userLoaded = [...new Set([...extraUserAgentDirs(), ...userScanDirs.dirs, userDirOld, userDirNew])].filter((dir) => !isExcluded(dir)).map((dir, discoveryPriority): LoadedAgentDirectory => {
 		const inspection = inspectAgentDefinitionDirectory(dir, undefined, isExcluded);
 		return { dir, inspection, loaded: loadAgentsFromDir(dir, "user", discoveryPriority, undefined, inspection) };
 	});
@@ -2942,7 +2953,7 @@ export function discoverAgentSnapshot(
 function discoverAgentsUncached(cwd: string, scope: AgentScope, preferredModelProvider?: string, options: AgentDiscoveryOptions = {}): AgentDiscoveryResult {
 	const effectiveCwd = path.resolve(cwd);
 	const userDirOld = path.join(getAgentDir(), "agents");
-	const userDirNew = path.join(os.homedir(), ".agents");
+	const userDirNew = isFeishuHost() ? userDirOld : path.join(os.homedir(), ".agents");
 	const { readDirs: projectAgentDirs, candidateDirs: projectCandidateDirs, preferredDir: projectAgentsDir } = resolveNearestProjectAgentDirs(effectiveCwd);
 	const userSettingsPath = getUserAgentSettingsPath();
 	const projectSettingsPath = getProjectAgentSettingsPath(effectiveCwd);
@@ -2963,7 +2974,7 @@ function discoverAgentsUncached(cwd: string, scope: AgentScope, preferredModelPr
 	const builtinAgents = applyBuiltinOverrides(applyDefaults(builtinLoaded.agents), userSettings, projectSettings, userSettingsPath, projectSettingsPath);
 	const userScanDirs = settingsAgentScanDirs(userSettings.agentScanDirs ?? [], isExcluded);
 	const projectScanDirs = settingsAgentScanDirs(projectSettings.agentScanDirs ?? [], isExcluded);
-	const userLoaded = scope === "project" ? [] : [...extraUserAgentDirs(), ...userScanDirs.dirs, userDirOld, userDirNew].filter((dir) => !isExcluded(dir)).map((dir, discoveryPriority) => {
+	const userLoaded = scope === "project" ? [] : [...new Set([...extraUserAgentDirs(), ...userScanDirs.dirs, userDirOld, userDirNew])].filter((dir) => !isExcluded(dir)).map((dir, discoveryPriority) => {
 		const inspection = inspectAgentDefinitionDirectory(dir, undefined, isExcluded);
 		directories.push(reportAgentDefinitionDirectory("user", dir, inspection));
 		return loadAgentsFromDir(dir, "user", discoveryPriority, undefined, inspection);

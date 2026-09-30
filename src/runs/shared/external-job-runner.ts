@@ -1,3 +1,4 @@
+import { isFeishuHost } from "../../shared/feishu-host.ts";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -277,6 +278,7 @@ export async function runExternalJob(input: {
 	onExternalJob?: (status: ExternalJobStatus) => void;
 	followUp?: ExternalJobFollowUpDescriptor;
 }): Promise<ExternalJobRunResult> {
+	if (isFeishuHost()) throw new Error("Feishu child resources and guard require the local native Pi runner.");
 	const provider = input.provider;
 	const options = input.options ?? {};
 	const promptDigest = externalJobPromptDigest(input.prompt);

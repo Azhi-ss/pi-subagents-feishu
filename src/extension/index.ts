@@ -1,3 +1,4 @@
+import { isFeishuHost } from "../shared/feishu-host.ts";
 /**
  * Subagent Tool
  *
@@ -562,7 +563,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		advertisedAgents = [];
 		advertisedContext = { cwd: ctx.cwd, model: ctx.model };
 		globalRoot = null;
-		advertisementReady = resolveGlobalNpmRoot().then((root) => {
+		advertisementReady = (isFeishuHost() ? Promise.resolve(null) : resolveGlobalNpmRoot()).then((root) => {
 			if (generation !== advertisementGeneration) return;
 			globalRoot = root;
 			refreshAdvertisedAgents();
@@ -870,6 +871,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		await waitForAdvertisement();
+		if (runtimeCleaned) return;
 		if (!event.systemPromptOptions.selectedTools.includes("subagent")) return;
 		const sessionId = state.currentSessionId ?? resolveCurrentSessionId(ctx.sessionManager);
 		// Structured sections let Pi append a transcript delta instead of replacing the

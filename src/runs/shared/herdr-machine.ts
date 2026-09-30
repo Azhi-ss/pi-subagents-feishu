@@ -1,3 +1,4 @@
+import { isFeishuHost } from "../../shared/feishu-host.ts";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -206,6 +207,7 @@ function findProjectRootForSettings(cwd: string): string {
 }
 
 export function resolveHerdrMachinePlacement(input: ResolveHerdrMachinePlacementInput): HerdrMachinePlacement {
+	if (isFeishuHost()) throw new Error("Feishu child resources and guard require the local native Pi runner.");
 	const requested = validateMachineName(input.machine);
 	const catalog = input.catalogJson !== undefined
 		? parseMachineCatalog(input.catalogJson)

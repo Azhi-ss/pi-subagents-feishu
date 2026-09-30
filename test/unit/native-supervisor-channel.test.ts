@@ -4,7 +4,7 @@ import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, describe, it, mock } from "node:test";
 import {
 	NATIVE_SUPERVISOR_TOOL_NAME,
 	createNativeSupervisorChannel,
@@ -125,11 +125,12 @@ describe("native supervisor channel", () => {
 			});
 			const readdir = fsDefault.readdirSync;
 			let scans = 0;
-			fsDefault.readdirSync = ((dir: fs.PathLike, options: unknown) => {
+			// Node's lazy rmSync helpers can retain this proxy; restore also resets cached references.
+			const readdirSpy = mock.method(fsDefault, "readdirSync", ((dir: fs.PathLike, options: unknown) => {
 				assert.equal(String(dir), path.join(ownDir, "requests"), "coordinators must not scan unrelated retained channels");
 				scans++;
 				return (readdir as (dir: fs.PathLike, options: unknown) => unknown)(dir, options);
-			}) as typeof fsDefault.readdirSync;
+			}) as typeof fsDefault.readdirSync);
 			syncBuiltinESMExports();
 			try {
 				channel.registerTools();
@@ -150,9 +151,10 @@ describe("native supervisor channel", () => {
 				assert.equal(tick, undefined, "finished descendants stop polling on every platform");
 				assert.equal(scans, scansBeforeIdle);
 			} finally {
-				channel.dispose();
-				fsDefault.readdirSync = readdir;
+				readdirSpy.mock.mockImplementation(readdir);
+				readdirSpy.mock.restore();
 				syncBuiltinESMExports();
+				channel.dispose();
 			}
 		});
 	}
@@ -341,18 +343,19 @@ describe("native supervisor channel", () => {
 			},
 		});
 		const readdir = fsDefault.readdirSync;
+		const readdirSpy = mock.method(fsDefault, "readdirSync");
 
 		try {
 			channel.start();
 			assert.equal(typeof tick, "function");
 			let injectUnknown = true;
-			fsDefault.readdirSync = ((dir: fs.PathLike, options?: unknown) => {
+			readdirSpy.mock.mockImplementation(((dir: fs.PathLike, options?: unknown) => {
 				if (injectUnknown) {
 					injectUnknown = false;
 					throw Object.assign(new Error("directory disappeared"), { code: "UNKNOWN" });
 				}
 				return (readdir as (dir: fs.PathLike, options?: unknown) => unknown)(dir, options);
-			}) as typeof fsDefault.readdirSync;
+			}) as typeof fsDefault.readdirSync);
 			syncBuiltinESMExports();
 
 			assert.doesNotThrow(() => tick!());
@@ -360,9 +363,10 @@ describe("native supervisor channel", () => {
 			tick!();
 			assert.deepEqual(sent.map((message) => message.details?.id), [requestId]);
 		} finally {
-			channel.dispose();
-			fsDefault.readdirSync = readdir;
+			readdirSpy.mock.mockImplementation(readdir);
+			readdirSpy.mock.restore();
 			syncBuiltinESMExports();
+			channel.dispose();
 		}
 	});
 
@@ -373,11 +377,12 @@ describe("native supervisor channel", () => {
 			getAllTools: () => [], registerTool: () => {}, sendMessage: () => {},
 		} as never, makeState(currentSessionId, ctx), { platform: "linux" });
 		const readdir = fsDefault.readdirSync;
+		const readdirSpy = mock.method(fsDefault, "readdirSync");
 
 		try {
-			fsDefault.readdirSync = (() => {
+			readdirSpy.mock.mockImplementation((() => {
 				throw Object.assign(new Error("unexpected scan failure"), { code: "UNKNOWN" });
-			}) as typeof fsDefault.readdirSync;
+			}) as typeof fsDefault.readdirSync);
 			syncBuiltinESMExports();
 
 			assert.throws(
@@ -385,9 +390,10 @@ describe("native supervisor channel", () => {
 				(error: NodeJS.ErrnoException) => error.code === "UNKNOWN",
 			);
 		} finally {
-			channel.dispose();
-			fsDefault.readdirSync = readdir;
+			readdirSpy.mock.mockImplementation(readdir);
+			readdirSpy.mock.restore();
 			syncBuiltinESMExports();
+			channel.dispose();
 		}
 	});
 

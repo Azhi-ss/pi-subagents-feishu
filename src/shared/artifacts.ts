@@ -1,7 +1,9 @@
 import * as fs from "node:fs";
+import { createHash } from "node:crypto";
 import * as path from "node:path";
 import { CHAIN_RUNS_DIR, TEMP_ARTIFACTS_DIR, type ArtifactPaths, type ArtifactDirPreference } from "./types.ts";
 import { getAgentDir } from "./utils.ts";
+import { readFeishuContext } from "./feishu-host.ts";
 const CLEANUP_MARKER_FILE = ".last-cleanup";
 export const PROJECT_SUBAGENTS_RELATIVE_DIR = ".pi/subagents";
 
@@ -104,6 +106,7 @@ function filesIncludeProjectArtifacts(files: unknown): boolean | undefined {
 
 /** Returns a package-publishing warning when project artifacts can enter npm packages. */
 export function getProjectArtifactPackagingWarning(cwd: string): string | undefined {
+	if (readFeishuContext()) return undefined;
 	const packagePath = path.join(cwd, "package.json");
 	if (!fs.existsSync(packagePath)) return undefined;
 
@@ -127,6 +130,8 @@ export function getProjectArtifactPackagingWarning(cwd: string): string | undefi
 }
 
 export function getProjectSubagentsDir(cwd: string): string {
+	const feishu = readFeishuContext();
+	if (feishu) return path.join(feishu.agentHome, "subagents", "projects", createHash("sha256").update(path.resolve(cwd)).digest("hex").slice(0, 20));
 	return path.join(cwd, PROJECT_SUBAGENTS_RELATIVE_DIR);
 }
 

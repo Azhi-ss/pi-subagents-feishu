@@ -3,6 +3,7 @@ import { it } from "node:test";
 import { runChildSession } from "../../src/runs/background/run-child-session.ts";
 import type { ChildSession, ChildSessionFactory } from "../../src/runs/shared/child-session.ts";
 import type { InProcessChildLaunch } from "../../src/runs/shared/child-launch.ts";
+import { withReferencedDeadline } from "../support/referenced-deadline.ts";
 
 const launch = { session: {
 	cwd: process.cwd(), storage: { kind: "memory" }, extensionPaths: [], ambientExtensions: false,
@@ -38,7 +39,7 @@ it("settles a timed-out run whose session creation never returns, and contains l
 	});
 	assert.ok(timeout, "runChildSession must register its timeout handler before the session exists");
 	timeout();
-	const result = await run;
+	const result = await withReferencedDeadline(run, 10_000);
 	assert.equal(result.timedOut, true);
 	assert.equal(result.exitCode, 1);
 	assert.equal(result.error, "Subagent timed out after 1ms.");
@@ -60,7 +61,7 @@ it("reports the created child's context window before prompting", { timeout: 10_
 		messages: [], sessionId: "window-session", modelId: "openai-codex/gpt-6-sol", contextWindow: 1_050_000,
 	};
 	const factory: ChildSessionFactory = { create: async () => session, async dispose() {} };
-	await runChildSession({
+	await withReferencedDeadline(runChildSession({
 		factory,
 		launch,
 		prompt: "report window",
@@ -68,7 +69,7 @@ it("reports the created child's context window before prompting", { timeout: 10_
 		appendChildEvent() {}, writeOutputLine() {},
 		registerTimeout(handler) { timeout = handler; },
 		onContextWindow: (contextWindow) => { reported.push(contextWindow); },
-	});
+	}), 10_000);
 	assert.deepEqual(reported, [1_050_000]);
 	assert.equal(promptedAfterReport, true);
 });

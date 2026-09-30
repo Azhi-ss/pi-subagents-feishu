@@ -205,7 +205,7 @@ function stripChildBoundaryInstructions(prompt: string): string {
 
 export function rewriteSubagentPrompt(
 	prompt: string,
-	options: { inheritProjectContext: boolean; inheritGlobalContext: boolean; inheritSkills: boolean; fanoutChild?: boolean; structuredOutput?: boolean },
+	options: { inheritProjectContext: boolean; inheritGlobalContext: boolean; inheritSkills: boolean; preserveOrchestrationSkill?: boolean; fanoutChild?: boolean; structuredOutput?: boolean },
 ): string {
 	let rewritten = prompt;
 	if (!options.inheritProjectContext) {
@@ -217,7 +217,7 @@ export function rewriteSubagentPrompt(
 	if (!options.inheritSkills) {
 		rewritten = stripInheritedSkills(rewritten);
 	}
-	rewritten = stripSubagentOrchestrationSkill(rewritten);
+	if (!options.preserveOrchestrationSkill) rewritten = stripSubagentOrchestrationSkill(rewritten);
 	rewritten = stripChildBoundaryInstructions(rewritten);
 	const boundary = options.fanoutChild ? CHILD_FANOUT_BOUNDARY_INSTRUCTIONS : CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS;
 	const structured = options.structuredOutput ? `\n\n${STRUCTURED_OUTPUT_INSTRUCTIONS}` : "";
@@ -557,6 +557,7 @@ export default function registerSubagentPromptRuntime(pi: ExtensionAPI, config?:
 				inheritProjectContext: inheritProjectContext ?? true,
 				inheritGlobalContext: inheritGlobalContext ?? true,
 				inheritSkills: inheritSkills ?? true,
+				preserveOrchestrationSkill: config.feishuContextPath !== undefined,
 				fanoutChild,
 				structuredOutput: Boolean(config.structuredOutput),
 			});

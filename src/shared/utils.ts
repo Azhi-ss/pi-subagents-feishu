@@ -6,6 +6,7 @@ import { previewDisplayText, sanitizeDisplayText, truncateDisplayText } from "./
 import { formatToolCall } from "./formatters.ts";
 import type { AgentProgress, AsyncStatus, Details, DisplayItem, ErrorInfo, NestedRunSummary, SingleResult, ToolCallSummary, Usage } from "./types.ts";
 import { validateAsyncStatusLaneMetadata } from "../runs/shared/lane-metadata.ts";
+import { isFeishuHost, readFeishuContext } from "./feishu-host.ts";
 
 const DEFAULT_CONFIG_DIR_NAME = ".pi";
 const PI_CODING_AGENT_PACKAGE_NAME = "@earendil-works/pi-coding-agent";
@@ -60,6 +61,7 @@ function resolveConfigDirNameFromPackageJson(entryPoint = process.argv[1], packa
 }
 
 export function resolveConfigDirName(codingAgentModule?: unknown, entryPoint?: string, packageRoot?: string): string {
+	if (isFeishuHost()) return ".feishu-agent";
 	const moduleValue = codingAgentModule && typeof codingAgentModule === "object"
 		? validConfigDirName((codingAgentModule as { CONFIG_DIR_NAME?: unknown }).CONFIG_DIR_NAME)
 		: undefined;
@@ -71,6 +73,7 @@ export function resolveConfigDirName(codingAgentModule?: unknown, entryPoint?: s
 let cachedConfigDirName: { entryPoint: string | undefined; packageRoot: string | undefined; value: string } | undefined;
 
 export function getConfigDirName(): string {
+	if (isFeishuHost()) return ".feishu-agent";
 	const entryPoint = process.argv[1];
 	const packageRoot = process.env[PI_CODING_AGENT_PACKAGE_ROOT_ENV];
 	if (cachedConfigDirName
@@ -88,6 +91,8 @@ export function getProjectConfigDir(projectRoot: string): string {
 }
 
 export function getAgentDir(): string {
+	const feishu = readFeishuContext();
+	if (feishu) return feishu.agentHome;
 	const configured = process.env.PI_CODING_AGENT_DIR;
 	const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
 	if (configured === "~") return home;

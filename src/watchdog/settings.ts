@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { THINKING_LEVELS, type ThinkingLevel } from "../shared/model-info.ts";
 import { getAgentDir, getProjectConfigDir } from "../shared/utils.ts";
+import { readFeishuContext } from "../shared/feishu-host.ts";
 import {
 	WATCHDOG_WARNING_SEVERITIES,
 	type ResolvedWatchdogConfig,
@@ -375,6 +376,8 @@ export function getWatchdogUserSettingsPath(): string {
 }
 
 function getProjectSettingsPath(cwd: string): string | undefined {
+	const feishu = readFeishuContext();
+	if (feishu) return path.join(getProjectConfigDir(feishu.projectRoot), "settings.json");
 	let currentDir = cwd;
 	while (true) {
 		if (isDirectory(getProjectConfigDir(currentDir)) || isDirectory(path.join(currentDir, ".agents"))) {
@@ -387,7 +390,7 @@ function getProjectSettingsPath(cwd: string): string | undefined {
 }
 
 export function getWatchdogProjectSettingsPath(cwd: string): string {
-	return path.join(getProjectConfigDir(cwd), "settings.json");
+	return path.join(getProjectConfigDir(readFeishuContext()?.projectRoot ?? cwd), "settings.json");
 }
 
 function deepMerge<T extends Record<string, unknown>>(base: T, patch: Record<string, unknown>): T {
